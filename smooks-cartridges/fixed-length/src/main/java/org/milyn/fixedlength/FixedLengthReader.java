@@ -54,6 +54,7 @@ import java.io.InputStreamReader;
 import java.io.Reader;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -170,6 +171,8 @@ public class FixedLengthReader implements SmooksXMLReader, VisitorAppender {
     @ConfigParam(name = "fields")
     private String[] flFields;
     private Field[] fields;
+    private Map<String, Field[]> lineFieldsMap = new HashMap<String, Field[]>();
+    private Map<String, Integer> lineTotalFieldLength = new HashMap<String, Integer>();
     private int totalFieldLenght;
 
     @ConfigParam(defaultVal = "false")
@@ -292,42 +295,48 @@ public class FixedLengthReader implements SmooksXMLReader, VisitorAppender {
 			BufferedReader flLineReader;
 	        String flRecord;
 	        int lineNumber = 0;
-	
+
 			// Get a reader for the Fixed Length source...
 	        flStreamReader = flInputSource.getCharacterStream();
 	        if(flStreamReader == null) {
 	            flStreamReader = new InputStreamReader(flInputSource.getByteStream(), encoding);
 	        }
-	
+
 	        // Create the Fixed Length line reader...
 	        flLineReader = new BufferedReader(flStreamReader);
-	
+
 	        // Start the document and add the root element...
 	        contentHandler.startDocument();
 	        contentHandler.startElement(XMLConstants.NULL_NS_URI, rootElementName, StringUtils.EMPTY, EMPTY_ATTRIBS);
-	
+
 	        // Output each of the Fixed Length line entries...
 	        while ((flRecord = flLineReader.readLine()) != null) {
 	        	lineNumber++; // First line is line "1"
-	
+
 	        	if (lineNumber <= this.skipLines) {
 	        		continue;
 	        	}
-	        	boolean invalidLength = flRecord.length() < totalFieldLenght;
+
+                String firstName = fields[0].getName();
+                int firstFieldLength = fields[0].getLength();
+                String firstValue = flRecord.substring(0,firstFieldLength).trim();
+                //this.lineFieldsMap.get(firstName)
+
+	        	boolean invalidLength = this.lineFieldsMap.get(firstName)==null ? flRecord.length() < totalFieldLenght : flRecord.length() < this.lineTotalFieldLength.get(firstName);
 	        	if(invalidLength && strict) {
 	        		if(logger.isWarnEnabled()) {
 	            		logger.debug("[WARNING-FIXEDLENGTH] Fixed Length line #" + lineNumber + " is invalid.  The line doesn't contain enough characters to fill all the fields. This line is skipped.");
 	            	}
 	        		continue;
 	        	}
-	
+
 	        	char[] recordChars = flRecord.toCharArray();
-	
+
 	        	if(indent) {
 	                contentHandler.characters(INDENT_LF, 0, 1);
 	                contentHandler.characters(INDENT_1, 0, 1);
 	            }
-	
+
 	            AttributesImpl attrs = EMPTY_ATTRIBS;
 	            // Add a lineNumber ID
 	            if (this.lineNumber || invalidLength) {
@@ -339,9 +348,62 @@ public class FixedLengthReader implements SmooksXMLReader, VisitorAppender {
 	            		attrs.addAttribute(XMLConstants.NULL_NS_URI, truncatedAttributeName, truncatedAttributeName, "xs:boolean", Boolean.TRUE.toString());
 	            	}
 	            }
-	
+                Field[] lineFields = this.lineFieldsMap.get(firstValue);
+
+	           if(lineFields != null) {
+                   int fieldLengthTotal = 0;
+                   contentHandler.startElement(XMLConstants.NULL_NS_URI, firstValue, StringUtils.EMPTY, attrs);
+                   for(int i = 0; i < lineFields.length; i++) {
+                       // Field name local to the loop
+                       String fieldName = lineFields[i].getName();
+                       // Field length local to the loop
+                       int fieldLength = lineFields[i].getLength();
+
+                       StringFunctionExecutor stringFunctionExecutor = lineFields[i].getStringFunctionExecutor();
+
+                       if(!lineFields[i].ignore()) {
+                           if(indent) {
+                               contentHandler.characters(INDENT_LF, 0, 1);
+                               contentHandler.characters(INDENT_2, 0, 2);
+                           }
+
+                           // Check that there are enough characters in the string
+                           boolean truncated = fieldLengthTotal + fieldLength > flRecord.length();
+
+                           AttributesImpl recordAttrs = EMPTY_ATTRIBS;
+
+                           //If truncated then set the truncated attribute
+                           if(truncated) {
+                               recordAttrs = new AttributesImpl();
+                               recordAttrs.addAttribute(XMLConstants.NULL_NS_URI, truncatedAttributeName, truncatedAttributeName, "xs:boolean", Boolean.TRUE.toString());
+                           }
+
+                           contentHandler.startElement(XMLConstants.NULL_NS_URI, fieldName, StringUtils.EMPTY, recordAttrs);
+
+                           // If not truncated then set the element data
+                           if(!truncated) {
+                               if(stringFunctionExecutor == null) {
+                                   contentHandler.characters(recordChars, fieldLengthTotal, fieldLength);
+                               } else {
+                                   String value = flRecord.substring(fieldLengthTotal, fieldLengthTotal + fieldLength);
+
+                                   value = stringFunctionExecutor.execute(value);
+
+                                   contentHandler.characters(value.toCharArray(), 0, value.length());
+                               }
+                           }
+
+                           contentHandler.endElement(XMLConstants.NULL_NS_URI, fieldName, StringUtils.EMPTY);
+                       }
+
+                       fieldLengthTotal += fieldLength;
+                   }
+                   contentHandler.endElement(XMLConstants.NULL_NS_URI, firstValue, StringUtils.EMPTY);
+	               continue;
+               }
+
 	            contentHandler.startElement(XMLConstants.NULL_NS_URI, recordElementName, StringUtils.EMPTY, attrs);
-	
+
 	            // Loops through fields
 	            int fieldLengthTotal = 0;
 	        	for(int i = 0; i < flFields.length; i++) {
@@ -349,61 +411,61 @@ public class FixedLengthReader implements SmooksXMLReader, VisitorAppender {
 	                String fieldName = fields[i].getName();
 	                // Field length local to the loop
 	                int fieldLength = fields[i].getLength();
-	
+
 	                StringFunctionExecutor stringFunctionExecutor = fields[i].getStringFunctionExecutor();
-	
+
 	                if(!fields[i].ignore()) {
 	                	if(indent) {
 	                        contentHandler.characters(INDENT_LF, 0, 1);
 	                        contentHandler.characters(INDENT_2, 0, 2);
 	                    }
-	
+
 	                	// Check that there are enough characters in the string
 	                	boolean truncated = fieldLengthTotal + fieldLength > flRecord.length();
-	
+
 	                	AttributesImpl recordAttrs = EMPTY_ATTRIBS;
-	
+
 	                	//If truncated then set the truncated attribute
 	                	if(truncated) {
 	                		recordAttrs = new AttributesImpl();
 	                        recordAttrs.addAttribute(XMLConstants.NULL_NS_URI, truncatedAttributeName, truncatedAttributeName, "xs:boolean", Boolean.TRUE.toString());
 	                	}
-	
+
 	                    contentHandler.startElement(XMLConstants.NULL_NS_URI, fieldName, StringUtils.EMPTY, recordAttrs);
-	
+
 	                    // If not truncated then set the element data
 	                    if(!truncated) {
 	                    	if(stringFunctionExecutor == null) {
 	                    		contentHandler.characters(recordChars, fieldLengthTotal, fieldLength);
 	                    	} else {
 	                    		String value = flRecord.substring(fieldLengthTotal, fieldLengthTotal + fieldLength);
-	
+
 	                    		value = stringFunctionExecutor.execute(value);
-	
+
 	                    		contentHandler.characters(value.toCharArray(), 0, value.length());
 	                    	}
 	            		}
-	
+
 	                    contentHandler.endElement(XMLConstants.NULL_NS_URI, fieldName, StringUtils.EMPTY);
 	        		}
-	
+
 	                fieldLengthTotal += fieldLength;
 	        	}
-	
+
 	        	if(indent) {
 	                contentHandler.characters(INDENT_LF, 0, 1);
 	                contentHandler.characters(INDENT_1, 0, 1);
 	            }
-	
+
 	            contentHandler.endElement(null, recordElementName, StringUtils.EMPTY);
-	
-	
+
+
 	        }
-	
+
 	        if(indent) {
 	            contentHandler.characters(INDENT_LF, 0, 1);
 	        }
-	
+
 	        // Close out the "fixedlength-set" root element and end the document..
 	        contentHandler.endElement(XMLConstants.NULL_NS_URI, rootElementName, StringUtils.EMPTY);
 	        contentHandler.endDocument();
@@ -443,12 +505,52 @@ public class FixedLengthReader implements SmooksXMLReader, VisitorAppender {
     }
 
 	private void buildFields() {
+	    String firstField = this.flFields[0];
+	    if(firstField.indexOf("!{")>-1) {
+            String multipleField = firstField.substring(firstField.indexOf("!{") + 2, firstField.indexOf("}"));
+            String[] multipleFields = multipleField.split(":");
+            for (String tmpMultiple : multipleFields) {
+                String lineName=tmpMultiple.substring(0, tmpMultiple.indexOf('('));
+                String[] tmpFields = tmpMultiple.substring(tmpMultiple.indexOf('(')+1, tmpMultiple.indexOf(')')).split("\\|");
+                Field[] fields = new Field[tmpFields.length];
+                int totalFieldLenght = 0;
+                for(int i = 0; i < tmpFields.length; i++) {
+                    // Extract informations about the field
+                    String fieldInfos = tmpFields[i].trim();
+
+                    // Extract name of the field (before bracket)
+                    String fieldName = fieldInfos.substring(0, fieldInfos.lastIndexOf('['));
+                    // Extract length of the field (between brackets)
+                    int fieldLength = Integer.parseInt(fieldInfos.substring(fieldInfos.lastIndexOf('[') + 1, fieldInfos.lastIndexOf(']')));
+
+                    String functionDefinition = fieldInfos.substring(fieldInfos.lastIndexOf(']')+1);
+
+                    if(functionDefinition.length() != 0 && functionDefinition.charAt(0) == FUNCTION_SEPARATOR) {
+                        functionDefinition = functionDefinition.substring(1);
+                    }
+
+                    StringFunctionExecutor stringFunctionExecutor = null;
+                    if(functionDefinition.length() != 0) {
+                        stringFunctionExecutor = StringFunctionExecutor.getInstance(functionDefinition);
+                    }
+
+                    fields[i] = new Field(fieldName, fieldLength, stringFunctionExecutor);
+
+                    totalFieldLenght += fieldLength;
+                }
+                this.lineFieldsMap.put(lineName,fields);
+                this.lineTotalFieldLength.put(lineName,totalFieldLenght);
+            }
+
+            flFields[0]=firstField.substring(0,firstField.indexOf("!{")) + firstField.substring(firstField.indexOf("}")+1);
+        }
 		// Parse input fields to extract names and lengths
         Field[] fields = new Field[this.flFields.length];
         int totalFieldLenght = 0;
     	for(int i = 0; i < this.flFields.length; i++) {
     		// Extract informations about the field
             String fieldInfos = this.flFields[i].trim();
+
             // Extract name of the field (before bracket)
             String fieldName = fieldInfos.substring(0, fieldInfos.lastIndexOf('['));
             // Extract length of the field (between brackets)
